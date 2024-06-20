@@ -1,0 +1,29 @@
+# Ignore Excel files
+*.xlsx
+
+# Ignore CSV files
+*.csv
+
+# Additional common ignores
+# Ignore node_modules directory (for Node.js projects)
+node_modules/
+
+# Ignore environment variable files
+.env
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore compiled files (for various languages)
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# Ignore Mac system files
+.DS_Store
+
+# Ignore Windows system files
+Thumbs.db
