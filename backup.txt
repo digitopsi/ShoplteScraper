@@ -1,0 +1,582 @@
+import pandas as pd
+import requests
+import time
+import os
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
+from tkinter import Tk
+from tkinter.filedialog import askopenfilename
+import sys 
+
+log_file = open("logs.txt", "w")
+sys.stdout = log_file
+sys.stderr = log_file
+
+Tk().withdraw()  # to hide the main window
+
+# Ask for 'universal_stock.csv' file
+supplier_csv = askopenfilename(title="Select the universal_stock.csv file", filetypes=[("CSV files", "*.csv")])
+
+# Ask for 'catalog_products.csv' file
+website_csv = askopenfilename(title="Select the catalog_products.csv file", filetypes=[("CSV files", "*.csv")])
+
+# Check if the user selected files
+if not supplier_csv or not website_csv:
+    print("You must select both files to proceed.")
+    exit()
+
+
+def progress_bar(current, total, bar_length=50):
+    percent = float(current) * 100 / total
+    arrow = '-' * int(round(percent / 100 * bar_length) - 1)
+    spaces = ' ' * (bar_length - len(arrow))
+    print(f"Progress: [{arrow}{spaces}] {percent:.2f}%")
+
+def create_SKU_comparison():
+    pass
+
+def extract_between_first_slashes_from_end(opis):
+    reversed_opis = opis[::-1]
+    last_slash_pos = reversed_opis.find('/')
+    second_last_slash_pos = reversed_opis.find('/', last_slash_pos + 1)
+    if last_slash_pos != -1 and second_last_slash_pos != -1:
+        extracted_info = reversed_opis[last_slash_pos+1:second_last_slash_pos].strip()
+        return extracted_info[::-1].strip()
+
+def generate_url(sku):
+    return f"https://shoplet.pl/szukaj?controller=search&orderby=position&orderway=desc&searchInDescriptions=0&search_query={sku}"
+
+def generate_b2b_link(sku):
+    return f"https://manage.wix.com/dashboard/cba4458f-01fb-4d09-8b1f-b9846cb5dd89/products?selectedColumns=0%2CName%2CProductType%2CProductSku%2CComparePrice%2CProductInventoryStatus%2CProductRibbon+false%2CProductBrand+false&viewId=all-items-view&search={sku}"
+
+def compare_stocks(supplier_file, website_file, output_file):
+    supplier_df = pd.read_excel(supplier_file)
+    website_df = pd.read_excel(website_file)
+    supplier_df['SKU'] = supplier_df['SKU'].astype(str)
+    website_df['SKU'] = website_df['SKU'].astype(str)
+    missing_skus = list(set(website_df['SKU']) - set(supplier_df['SKU']))
+    new_skus = list(set(supplier_df['SKU']) - set(website_df['SKU']))
+    missing_skus_df = pd.DataFrame({
+        'Missing_SKUs': missing_skus,
+        'Missing_SKUs_URLs': [generate_url(sku) for sku in missing_skus]
+    })
+    # Add a 'link_to' column to the 'Missing_SKUs' DataFrame
+    missing_skus_df['link_to'] = missing_skus_df['Missing_SKUs'].apply(generate_b2b_link)
+    new_skus_df = pd.DataFrame({
+        'New_SKUs': new_skus,
+        'New_SKUs_URLs': [generate_url(sku) for sku in new_skus]
+    })
+    with pd.ExcelWriter(output_file) as writer:
+        missing_skus_df.to_excel(writer, sheet_name='Missing_SKUs', index=False)
+        new_skus_df.to_excel(writer, sheet_name='New_SKUs', index=False)
+
+
+
+
+supplier_df = pd.read_csv(supplier_csv, delimiter=';')
+supplier_df = supplier_df[supplier_df['Symbol'].str.startswith('L1', na=False)]
+supplier_df.rename(columns={'Symbol': 'SKU'}, inplace=True)
+supplier_xlsx = 'edited_universal_stock.xlsx'
+supplier_df.to_excel(supplier_xlsx, index=False)
+
+
+website_df = pd.read_csv(website_csv, delimiter=',')
+website_df.rename(columns={'sku': 'SKU'}, inplace=True)
+website_xlsx = 'edited_catalog_products.xlsx'
+website_df.to_excel(website_xlsx, index=False)
+
+
+output_xlsx = 'SKU_Comparison.xlsx'
+compare_stocks(supplier_xlsx, website_xlsx, output_xlsx)
+
+def generate_extract_with_info():
+    df = pd.read_excel('edited_universal_stock.xlsx')  # Read the edited file
+    filtered_df = df[df['Identyfikator'].apply(lambda x: str(x).startswith('L1'))].reset_index(drop=True)
+    final_rows = []
+
+    for index, row in filtered_df.iterrows():
+        sku = row['Identyfikator']
+        url = generate_url(sku)
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        if soup.find_all('div', {'class': 'product-inner'}):
+            final_rows.append(row)
+
+    final_df = pd.DataFrame(final_rows).reset_index(drop=True)
+    final_df['Correct_Extracted_Info'] = final_df['Opis'].apply(extract_between_first_slashes_from_end)
+    values_to_keep = ["A KL", "A- KL", "A1 KL", "A2 KL", "AM1 KL", "AM2 KL", "B KL", "B1 KL", "B2 KL", "KL A1", "KL A2", "KL AM1", "KL AM2", "KL B1", "KL B2", "V1 KL"]
+    final_filtered_df = final_df[final_df['Correct_Extracted_Info'].isin(values_to_keep)]
+    final_filtered_df.to_excel('extract_with_info.xlsx', index=False)
+
+
+def first_script():
+    urls = pd.read_excel("SKU_Comparison.xlsx", sheet_name="New_SKUs")
+    
+    results = pd.DataFrame(columns=["URL", "Link"])
+    
+    total_urls = len(urls['New_SKUs_URLs'])
+    
+    for idx, url in enumerate(urls['New_SKUs_URLs']):
+        print(f"Processing URL: {url}")
+        
+        r = requests.get(url)
+        
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        links = soup.find_all('a', class_='back-image')
+
+        for link in links:
+            href = link.get('href')
+            if any(substring in href for substring in ["results=2", "results=3", "results=4"]):
+                continue
+            results.loc[len(results)] = [url, href]
+            print(f"Links found: {href}")
+     
+        progress_bar(idx+1, total_urls)
+
+    results.to_excel("scrapedurls_img.xlsx", index=False)
+
+
+def second_script():
+    df = pd.read_excel("scrapedurls_img.xlsx")
+    row_list = []
+    total_links = len(df['Link'])
+
+    for idx, link in enumerate(df['Link']):
+        print(f"Processing URL: {link}")
+        response = requests.get(link)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        ul_element = soup.find('ul', {'id': 'thumbs_list_frame'})
+        image_hrefs = []
+        if ul_element:
+            for li in ul_element.find_all('li'):
+                a = li.find('a')
+                if a and 'href' in a.attrs:
+                    image_hrefs.append(a['href'])
+        row_dict = {"Link": link}
+        for i, href in enumerate(image_hrefs):
+            col_name = f"Image_Href_{i+1}"
+            row_dict[col_name] = href
+        row_list.append(row_dict)
+        progress_bar(idx+1, total_links)
+    image_results = pd.DataFrame(row_list)
+    image_results.to_excel("scraped_image_hrefs.xlsx", index=False)
+
+def third_script():
+    df = pd.read_excel("scrapedurls_img.xlsx")
+    chrome_options = Options()
+    chrome_profile_path = "C:\\Users\\AŽBE\\AppData\\Local\\Google\\Chrome\\User Data"
+    chrome_options.add_argument(f"user-data-dir={chrome_profile_path}")
+    chrome_options.add_argument("profile-directory=Profile 11")
+    driver = webdriver.Chrome(options=chrome_options)
+    attributes_to_extract = [
+        "Mark", "Model", "Model procesorja", "velikost RAM-a", "Kapaciteta diska",
+        "Diagonala zaslona", "Zaslon na dotik", "Konektorji", "Garancija",
+        "Operacijski sistem", "Komunikacija", "Multimedija", "Model grafične kartice"
+    ]
+    extracted_data_df = pd.DataFrame()
+    total_links = len(df['Link'])
+
+    def slow_scroll(driver):
+        last_height = driver.execute_script("return window.pageYOffset;")
+        while True:
+            body = driver.find_element(By.TAG_NAME, 'body')
+            body.send_keys(Keys.PAGE_DOWN)
+            time.sleep(1)
+            new_height = driver.execute_script("return window.pageYOffset;")
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+    for idx, link in enumerate(df['Link']):
+        print(f"Processing URL: {link}")
+        driver.get(link)
+        time.sleep(1)
+        slow_scroll(driver)
+        try:
+            table = driver.find_element(By.CLASS_NAME, 'table-data-sheet')
+            extracted_data = {'Link': link}
+            for row in table.find_elements(By.TAG_NAME, 'tr'):
+                cells = row.find_elements(By.TAG_NAME, 'td')
+                if len(cells) == 2:
+                    attribute = cells[0].text.strip()
+                    value = cells[1].text.strip()
+                    if attribute in attributes_to_extract:
+                        extracted_data[attribute] = value
+            new_row = pd.DataFrame([extracted_data])
+            extracted_data_df = pd.concat([extracted_data_df, new_row], ignore_index=True)
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            print("Table not found.")
+        progress_bar(idx+1, total_links)
+    driver.quit()
+    extracted_data_df.to_excel("extracted_attributes.xlsx", index=False)
+
+def main():
+    print("Running the SKU comparison script...")
+    create_SKU_comparison()
+    print("SKU comparison script completed.")
+    
+    print("Running the first script...")
+    first_script()
+    print("First script completed.")
+    generate_extract_with_info()
+    print("Running the second script...")
+    second_script()
+    print("Second script completed.")
+
+    print("Running the third script...")
+    third_script()
+    print("Third script completed.")
+
+if __name__ == "__main__":
+    main()
+
+
+import pandas as pd
+
+def update_graphic_card_model(cell):
+    if pd.isna(cell) or cell == "":
+        return "Integrirana grafična kartica"
+    return cell
+
+def filter_mark(cell):
+    if pd.isna(cell):
+        return None
+    brands = ['Lenovo', 'HP', 'Dell']
+    for brand in brands:
+        if brand in cell:
+            return brand
+    return None
+
+# Load the original Excel file into a DataFrame
+image_hrefs_file_path = 'scraped_image_hrefs.xlsx'
+extract_info_file_path = 'extract_with_info.xlsx'
+original_file_path = 'extracted_attributes.xlsx'
+df_original = pd.read_excel(original_file_path)
+
+# Modify 'Model grafične kartice' column
+df_original['Model grafične kartice'] = df_original['Model grafične kartice'].apply(update_graphic_card_model)
+
+# Step 1: Remove Rows Based on Conditions
+df_original = df_original[~df_original['Link'].str.contains('results=2|results=3|results=4|results=5', na=False)]
+df_original = df_original[df_original['Operacijski sistem'].str.contains('Windows|Chrome', na=False)]
+df_original = df_original[df_original['Model procesorja'].str.contains('Intel Core i', na=False)]
+df_original['Mark'] = df_original['Mark'].apply(filter_mark)
+df_original = df_original[df_original['Mark'].notna()]
+df_original.dropna(inplace=True)
+
+# Step 2: Modify Data Inside Cells
+df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].astype(str)
+df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].str.replace('.', ',')
+df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].apply(lambda x: f'{x}\"')
+df_original['Zaslon na dotik'] = df_original['Zaslon na dotik'].replace({'ja': 'Da', 'št': 'Ne'})
+df_original['SKU'] = df_original['Link'].apply(lambda x: x[-17:-10])
+
+# Additional modifications to the 'Model' column
+df_original['Model'] = df_original['Model'].str.replace('Natančnost', 'Precision', case=False)
+df_original['Model'] = df_original['Model'].str.replace('Zemljepisna širina', 'Latitude', case=False)
+
+# Load other Excel files
+df_image_hrefs = pd.read_excel(image_hrefs_file_path)
+df_extract_info = pd.read_excel(extract_info_file_path)
+
+# Adding SKU column to df_image_hrefs based on 'Link', if needed
+df_image_hrefs['SKU'] = df_image_hrefs['Link'].apply(lambda x: x[-17:-10] if pd.notna(x) else None)
+
+# Delete the original 'SKU' column in df_extract_info, if it exists
+if 'SKU' in df_extract_info.columns:
+    df_extract_info = df_extract_info.drop('SKU', axis=1)
+
+# Rename 'Identyfikator' to 'SKU' in df_extract_info
+df_extract_info = df_extract_info.rename(columns={'Identyfikator': 'SKU'})
+
+# Assuming df_original is already loaded and prepared
+
+# Equalize SKUs and Merge DataFrames
+common_skus = set(df_original['SKU']).intersection(set(df_image_hrefs['SKU']), set(df_extract_info['SKU']))
+df_original = df_original[df_original['SKU'].isin(common_skus)]
+df_image_hrefs = df_image_hrefs[df_image_hrefs['SKU'].isin(common_skus)]
+df_extract_info = df_extract_info[df_extract_info['SKU'].isin(common_skus)]
+
+df_original.sort_values('SKU', inplace=True)
+df_image_hrefs.sort_values('SKU', inplace=True)
+df_extract_info.sort_values('SKU', inplace=True)
+
+# Merge df_original with df_extract_info on 'SKU', including 'Correct_Extracted_Info'
+df_merged = pd.merge(df_original, df_extract_info[['SKU', 'Correct_Extracted_Info']], on='SKU', how='left')
+
+# Select columns from df_image_hrefs to merge
+cols_to_merge = df_image_hrefs.columns[2:6]
+df_merged = pd.merge(df_merged, df_image_hrefs[['SKU'] + list(cols_to_merge)], on='SKU', how='left')
+
+# Save the final merged DataFrame
+final_output_file_path = 'final_merged_attributes.xlsx'
+df_merged.to_excel(final_output_file_path, index=False)
+
+
+
+import pandas as pd
+
+# Function to update the GRADE column based on the new rules
+def update_grade(cell):
+    grade_patterns = {
+        'Razred A': ['A KL', 'A- KL', 'A1 KL', 'A2 KL', 'KL A1', 'KL A2'],
+        'Razred B': ['AM1 KL', 'AM2 KL', 'KL AM1', 'KL AM2'],
+        'Razred C': ['B KL', 'B1 KL', 'B2 KL', 'KL B1', 'KL B2'],
+        'Razred A+': ['V1 KL']
+    }
+    for grade, patterns in grade_patterns.items():
+        if any(pattern in cell for pattern in patterns):
+            return grade
+    return None
+
+# Function to extract the year of the laptop based on the processor model
+def extract_year_from_processor(cell):
+    if '-' in cell:
+        series_number = cell.split('-')[-1]
+        digits = ''.join(filter(str.isdigit, series_number))
+        if len(digits) >= 2:
+            generation_candidate = int(digits[:2])
+            if generation_candidate > 20:
+                generation = int(digits[0])
+            else:
+                generation = generation_candidate
+            if generation >= 4:
+                return 2010 + generation
+    return None
+
+# Function to convert disk capacity from "1000 GB" to "1 TB"
+def convert_disk_capacity(cell):
+    if cell == "1000 GB":
+        return "1 TB"
+    return cell
+
+# Function to ensure only one quotation mark in 'Diagonala zaslona'
+def adjust_screen_size(cell):
+    if cell.count('\"') > 1:
+        return cell.replace('\"', '', 1)
+    return cell
+
+# Load the final merged DataFrame
+df_merged = pd.read_excel('final_merged_attributes.xlsx')
+
+# Update the 'Leto' and 'GRADE' columns in the DataFrame
+df_merged['Leto'] = df_merged['Model procesorja'].apply(extract_year_from_processor)
+df_merged['GRADE'] = df_merged['Correct_Extracted_Info'].apply(update_grade)
+
+# Remove rows where the processor is older than 2014 or where 'Leto'/'GRADE' is None
+df_merged = df_merged[df_merged['Leto'].notna() & df_merged['GRADE'].notna()]
+df_merged = df_merged[df_merged['Leto'] >= 2014]
+
+# Apply the conversion functions for 'Kapaciteta diska' and 'Diagonala zaslona'
+df_merged['Kapaciteta diska'] = df_merged['Kapaciteta diska'].apply(convert_disk_capacity)
+df_merged['Diagonala zaslona'] = df_merged['Diagonala zaslona'].apply(adjust_screen_size)
+
+# Save the corrected DataFrame to a new Excel file
+df_merged.to_excel('corrected_final_merged_attributes.xlsx', index=False)
+
+
+
+import pandas as pd
+
+# Load the data
+data = pd.read_excel("corrected_final_merged_attributes.xlsx")
+
+# Lists to store the generated descriptions
+descriptions = []
+
+# Iterate through each row in the DataFrame
+for index, row in data.iterrows():
+    # Retrieve the necessary information
+    brand = row["Mark"]
+    model = row["Model"]
+    processor_model = row["Model procesorja"]
+    ram = row["velikost RAM-a"]
+    disk = row["Kapaciteta diska"]
+    screen_size = row["Diagonala zaslona"]
+    os = row["Operacijski sistem"]
+    graphics_card = row["Model grafične kartice"]
+    touch_screen = row["Zaslon na dotik"]
+    ports = row["Konektorji"]
+    multimedia = row["Multimedija"]
+    wireless_tech = row["Komunikacija"]
+    warranty = row["Garancija"]
+    year = row["Leto"]
+    grade = row["GRADE"]
+
+    
+    # Generate the description based on the computer's specifications
+    if processor_model.startswith("Intel Core i5") or ("AMD Ryzen 3") and ram == "8 GB" and disk in ["128 GB", "256 GB"]:
+        description = f"<p>{brand} {model} je idealen za vsakodnevno uporabo. Z {disk} prostora in {ram} pomnilnika, {model} odlično obvladuje osnovne naloge, kot so brskanje po spletu, urejanje dokumentov in gledanje filmov. {processor_model} zagotavlja gladko delovanje, medtem ko {screen_size} zagotavlja dovolj prostora za udobno delo in zabavo.</p> <br> <h3><strong>Tehnične specifikacije</strong></h3> <br> <ul><li>Znamka: <strong>{brand}</strong></li><li>Leto: <strong>{year}</strong></li><li>Diagonala zaslona: <strong>{screen_size}</strong></li><li>Vrsta procesorja: <strong>{processor_model}</strong></li><li>Operacijski sistem: <strong>{os}</strong></li><li>Velikost pomnilnika: <strong>{ram}</strong></li><li>Velikost diska: <strong>{disk}</strong></li><li>Grafična kartica: <strong>{graphics_card}</strong></li><li>Zaslon na dotik: <strong>{touch_screen}</strong></li><li>Razred: <strong>{grade}</strong></li><li>Priključki: <strong>{ports}</strong></li><li>Multimedija: <strong>{multimedia}</strong></li><li>Brezžične tehnologije: <strong>{wireless_tech}</strong></li><li>Garancija v mesecih: <strong>{warranty}</strong></li></ul><br><p>Oprema ima lahko vidne napake, kot so odrgnine in udrtine na ohišju. Te napake so vidne, vendar nikakor ne motijo ​​vsakodnevne uporabe. Poleg tega ima lahko zaslon nekaj manjših prask in odrgnin. Pri vključenem zaslonu te napake ne bi smele v ničemer ovirati dela.</p>"
+    elif processor_model.startswith("Intel Core i5") or ("AMD Ryzen 5") and ram in ["12 GB", "16 GB"] and disk in ["512 GB", "128 GB", "256 GB"]:
+        description = f"<p>{brand} {model} se ponaša z {processor_model}, {ram} pomnilnika in {disk} prostora, kar pomeni, da je kos zahtevnejšim nalogam. Učinkovitost tega prenosnika je idealna za študij, domače pisarne ali manjše podjetje. Ponuja odlično ravnovesje med zmogljivostjo in cenovno dostopnostjo, ne da bi pri tem žrtvoval kakovost.</p> <br> <h3><strong>Tehnične specifikacije</strong></h3> <br> <ul><li>Znamka: <strong>{brand}</strong></li><li>Leto: <strong>{year}</strong></li><li>Diagonala zaslona: <strong>{screen_size}</strong></li><li>Vrsta procesorja: <strong>{processor_model}</strong></li><li>Operacijski sistem: <strong>{os}</strong></li><li>Velikost pomnilnika: <strong>{ram}</strong></li><li>Velikost diska: <strong>{disk}</strong></li><li>Grafična kartica: <strong>{graphics_card}</strong></li><li>Zaslon na dotik: <strong>{touch_screen}</strong></li><li>Razred: <strong>{grade}</strong></li><li>Priključki: <strong>{ports}</strong></li><li>Multimedija: <strong>{multimedia}</strong></li><li>Brezžične tehnologije: <strong>{wireless_tech}</strong></li><li>Garancija v mesecih: <strong>{warranty}</strong></li></ul><br><p>Oprema ima lahko vidne napake, kot so odrgnine in udrtine na ohišju. Te napake so vidne, vendar nikakor ne motijo ​​vsakodnevne uporabe. Poleg tega ima lahko zaslon nekaj manjših prask in odrgnin. Pri vključenem zaslonu te napake ne bi smele v ničemer ovirati dela.</p>"
+    elif processor_model.startswith("Intel Core i7") and ram in ["16 GB", "32 GB"] and disk in ["512 GB", "128 GB", "256 GB", "1 TB"]:
+        description = f"<p>{brand} {model} je zasnovan za tiste, ki potrebujejo moč in hitrost. {processor_model} in {ram} pomnilnik zagotavljata neverjetno hitro in učinkovito delovanje, medtem ko {disk} prostora omogoča shranjevanje velikih datotek in zahtevnih aplikacij. Idealno za zahtevne uporabnike, kot so grafični oblikovalci, programerji ali gamerji.</p> <br> <h3><strong>Tehnične specifikacije</strong></h3> <br> <ul><li>Znamka: <strong>{brand}</strong></li><li>Leto: <strong>{year}</strong></li><li>Diagonala zaslona: <strong>{screen_size}</strong></li><li>Vrsta procesorja: <strong>{processor_model}</strong></li><li>Operacijski sistem: <strong>{os}</strong></li><li>Velikost pomnilnika: <strong>{ram}</strong></li><li>Velikost diska: <strong>{disk}</strong></li><li>Grafična kartica: <strong>{graphics_card}</strong></li><li>Zaslon na dotik: <strong>{touch_screen}</strong></li><li>Razred: <strong>{grade}</strong></li><li>Priključki: <strong>{ports}</strong></li><li>Multimedija: <strong>{multimedia}</strong></li><li>Brezžične tehnologije: <strong>{wireless_tech}</strong></li><li>Garancija v mesecih: <strong>{warranty}</strong></li></ul><br><p>Oprema ima lahko vidne napake, kot so odrgnine in udrtine na ohišju. Te napake so vidne, vendar nikakor ne motijo ​​vsakodnevne uporabe. Poleg tega ima lahko zaslon nekaj manjših prask in odrgnin. Pri vključenem zaslonu te napake ne bi smele v ničemer ovirati dela.</p>"
+    elif processor_model.startswith("Intel Core i9"):
+        description = f"<p>{brand} {model} je namenjen zahtevnim uporabnikom, ki potrebujejo vrhunske specifikacije za svoje delo. Z {processor_model}in {ram} za hitro in učinkovito delovanje, ter z {disk} za obilico prostora za shranjevanje, je ta prenosnik pripravljen na najzahtevnejše naloge. Odlična izbira za strokovnjake kot so video producente, 3D umetnike ali profesionalne gamerje.</p> <br> <h3><strong>Tehnične specifikacije</strong></h3> <br> <ul><li>Znamka: <strong>{brand}</strong></li><li>Leto: <strong>{year}</strong></li><li>Diagonala zaslona: <strong>{screen_size}</strong></li><li>Vrsta procesorja: <strong>{processor_model}</strong></li><li>Operacijski sistem: <strong>{os}</strong></li><li>Velikost pomnilnika: <strong>{ram}</strong></li><li>Velikost diska: <strong>{disk}</strong></li><li>Grafična kartica: <strong>{graphics_card}</strong></li><li>Zaslon na dotik: <strong>{touch_screen}</strong></li><li>Razred: <strong>{grade}</strong></li><li>Priključki: <strong>{ports}</strong></li><li>Multimedija: <strong>{multimedia}</strong></li><li>Brezžične tehnologije: <strong>{wireless_tech}</strong></li><li>Garancija v mesecih: <strong>{warranty}</strong></li></ul><br><p>Oprema ima lahko vidne napake, kot so odrgnine in udrtine na ohišju. Te napake so vidne, vendar nikakor ne motijo ​​vsakodnevne uporabe. Poleg tega ima lahko zaslon nekaj manjših prask in odrgnin. Pri vključenem zaslonu te napake ne bi smele v ničemer ovirati dela.</p>"
+    else:
+        description = f"<h3><strong>Tehnične specifikacije</strong></h3> <br> <ul><li>Znamka: <strong>{brand}</strong></li><li>Leto: <strong>{year}</strong></li><li>Diagonala zaslona: <strong>{screen_size}</strong></li><li>Vrsta procesorja: <strong>{processor_model}</strong></li><li>Operacijski sistem: <strong>{os}</strong></li><li>Velikost pomnilnika: <strong>{ram}</strong></li><li>Disk: <strong>{disk}</strong></li><li>Grafična kartica: <strong>{graphics_card}</strong></li><li>Zaslon na dotik: <strong>{touch_screen}</strong></li><li>Razred: <strong>{grade}</strong></li><li>Priključki: <strong>{ports}</strong></li><li>Multimedija: <strong>{multimedia}</strong></li><li>Brezžične tehnologije: <strong>{wireless_tech}</strong></li><li>Garancija v mesecih: <strong>{warranty}</strong></li></ul><br><p>Oprema ima lahko vidne napake, kot so odrgnine in udrtine na ohišju. Te napake so vidne, vendar nikakor ne motijo ​​vsakodnevne uporabe. Poleg tega ima lahko zaslon nekaj manjših prask in odrgnin. Pri vključenem zaslonu te napake ne bi smele v ničemer ovirati dela.</p>"
+    
+    # Add the description to the list
+    descriptions.append(description)
+
+if len(descriptions) != len(data):
+    raise ValueError(f"Length of descriptions ({len(descriptions)}) does not match length of DataFrame ({len(data)})")
+
+# Add the descriptions to the DataFrame
+data["Description"] = descriptions
+
+# Save the DataFrame to a new Excel file
+data.to_excel("descriptions.xlsx", index=False)
+
+# ---- Final Export Code Starts Here ----
+
+
+import pandas as pd
+
+
+
+# Create the new export DataFrame with required column headers
+new_export_df = pd.DataFrame(columns=['handleId', 'fieldType', 'name', 'description', 'productImageUrl', 'collection', 'SKU', 'ribbon', 'price', 'surcharge', 'visible', 'discountMode','discountValue','inventory','weight','cost'])
+
+# Read the updated descriptions Excel file with the 'Nivo' column
+descriptions = pd.read_excel('descriptions.xlsx')
+
+new_export_df['handleId'] = descriptions['SKU'].reset_index(drop=True)
+
+new_export_df['fieldType'] = 'Product'
+
+new_export_df['name'] = descriptions['Mark'] + ' ' + descriptions['Model'] + '/' + descriptions['Model procesorja'].str[:13] + '/' + descriptions['velikost RAM-a'] + '/' + descriptions['Kapaciteta diska'] + '/' + descriptions['Diagonala zaslona'] + '/' + descriptions['GRADE']
+
+# Add the description data
+new_export_df['description'] = descriptions['Description'].reset_index(drop=True)
+
+new_export_df['productImageUrl'] = descriptions['Image_Href_2'] + ';' + descriptions['Image_Href_3'] + ';' + descriptions['Image_Href_4'] + ';' + descriptions['Image_Href_5']
+
+new_export_df['collection'] = "Prenosni računalniki;" + descriptions['Model procesorja'].str[:13] + ';' + descriptions['Leto'].astype(str) + ';' + descriptions['Operacijski sistem'] + ';' + descriptions['GRADE'] + ';' + descriptions['Diagonala zaslona'] + ';' + descriptions['Mark'] + ';' + descriptions['velikost RAM-a'] + ';' + descriptions['Kapaciteta diska']
+
+# Populate SKU column from the updated descriptions DataFrame
+new_export_df['SKU'] = descriptions['SKU'].reset_index(drop=True)
+
+new_export_df['ribbon'] = ''
+
+new_export_df['price'] = ''
+
+new_export_df['surcharge'] = ''
+# Add the static columns
+new_export_df['visible'] = 'TRUE'
+new_export_df['discountMode'] = 'Percent'
+new_export_df['discountValue'] = 0
+new_export_df['inventory'] = 'InStock'
+
+new_export_df['weight'] = ''
+
+new_export_df['cost'] = ''
+
+#Save the new export DataFrame to an Excel file
+new_export_file_path_with_images = 'new_export_with_extra_columns_and_images.xlsx'
+new_export_df.to_excel(new_export_file_path_with_images, index=False)
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from bs4 import BeautifulSoup
+import pandas as pd
+import time
+import random
+
+def adjust_price(price):
+    price_str = str(price).split(".")[0]
+    last_digit = int(price_str[-1])
+    if last_digit >= 5:
+        adjusted_price = int(price_str[:-1] + "9") + 1
+    else:
+        adjusted_price = int(price_str[:-1] + "9")
+    return f"{adjusted_price}.99"
+
+# Selenium setup
+chrome_options = Options()
+chrome_profile_path = "C:\\Users\\AŽBE\\AppData\\Local\\Google\\Chrome\\User Data"
+chrome_options.add_argument(f"user-data-dir={chrome_profile_path}")
+chrome_options.add_argument("profile-directory=Profile 11")
+driver = webdriver.Chrome(options=chrome_options)
+
+# Read the Excel file
+df = pd.read_excel("new_export_with_extra_columns_and_images.xlsx")
+
+# Initialize an empty list to collect indices of rows to be dropped
+rows_to_drop = []
+
+# Loop through the DataFrame to scrape each SKU
+for index, row in df.iterrows():
+    sku = row['SKU']
+    url = f"https://b2b.shoplet.pl/search?search_query={sku}"
+    print(f"Processing SKU: {sku}")
+
+    try:
+        driver.get(url)
+        time.sleep(2)
+
+        # Get page source and make soup
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        # Find the price element
+        price_element = soup.find("span", class_="price product-price")
+        price_text = price_element.find_all("font", style="vertical-align: inherit;")[1].text.strip().replace(" PLN", "").replace(",", ".")
+        price_number = float(price_text)
+        cost = price_number * 0.22
+        df.at[index, 'cost'] = cost
+
+        # Calculate and adjust the price
+        price_with_margin = cost + (cost * 0.025) + 125
+        
+        # Check if the product is marked as 'Top Ponudba' and adjust the price accordingly
+        if df.at[index, 'ribbon'] == 'Top Ponudba!':
+            price_with_margin += 200  # Increase the base cost by 200
+            price_with_margin += price_with_margin * 0.025  # Apply an additional 2.5% margin
+        
+        final_price = adjust_price(f"{price_with_margin:.2f}")
+        df.at[index, 'price'] = final_price
+
+    except TimeoutException:
+        print(f"Timeout occurred for SKU {sku}. Skipping...")
+        continue
+
+    except Exception as e:
+        print(f"Could not scrape SKU {sku}. Error: {e}")
+        rows_to_drop.append(index)
+
+# Drop the rows that could not be scraped
+if rows_to_drop:
+    df.drop(rows_to_drop, inplace=True)
+
+# Reset the DataFrame index after row deletion
+df.reset_index(drop=True, inplace=True)
+
+# Add the 'ribbon' column if it doesn't exist
+if 'ribbon' not in df.columns:
+    df['ribbon'] = None
+
+# Select 50% of the rows randomly for discount
+num_rows = len(df)
+rows_to_update = random.sample(range(num_rows), num_rows // 2)
+
+# Update 'discountValue' and 'ribbon' columns
+for row in rows_to_update:
+    df.at[row, 'discountValue'] = 100
+    df.at[row, 'ribbon'] = 'Top Ponudba!'
+
+# Append ";Top Ponudba" to the existing string in the "collection" column for all rows
+df['collection'] = df['collection'].astype(str) + ";Top Ponudba"
+
+# Save the updated DataFrame to a new Excel file
+df.to_excel("export_final_with_discounts.xlsx", index=False)
+print("Excel file with discounts and updated collection has been updated.")
