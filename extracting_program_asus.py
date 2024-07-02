@@ -9,252 +9,235 @@ from tkinter import Tk
 from tkinter.filedialog import askopenfilename
 import sys
 import traceback
-
-log_file = open("logs.txt", "w")
-sys.stdout = log_file
-sys.stderr = log_file
-
-def log_exception(e):
-    """
-    Log an exception to the log file.
-    """
-    exc_type, exc_value, exc_traceback = sys.exc_info()
-    traceback_details = {
-        'filename': exc_traceback.tb_frame.f_code.co_filename,
-        'lineno'  : exc_traceback.tb_lineno,
-        'name'    : exc_traceback.tb_frame.f_code.co_name,
-        'type'    : exc_type.__name__,
-        'message' : exc_value.message,
-    }
-    log_file.write("Exception occurred: {}\n".format(traceback_details))
-    traceback.print_exception(exc_type, exc_value, exc_traceback, file=log_file)
-
-Tk().withdraw()  # to hide the main window
-
-# Ask for 'universal_stock.csv' file
-supplier_csv = askopenfilename(title="Select the universal_stock.csv file", filetypes=[("CSV files", "*.csv")])
-
-# Ask for 'catalog_products.csv' file
-website_csv = askopenfilename(title="Select the catalog_products.csv file", filetypes=[("CSV files", "*.csv")])
-
-# Check if the user selected files
-if not supplier_csv or not website_csv:
-    print("You must select both files to proceed.")
-    exit()
+import time
 
 def generate_url(sku):
     return f"https://shoplet.pl/szukaj?controller=search&orderby=position&orderway=desc&searchInDescriptions=0&search_query={sku}"
 
-def compare_stocks(supplier_file, website_file, output_file):
-    supplier_df = pd.read_excel(supplier_file)
-    website_df = pd.read_excel(website_file)
-    supplier_df['Identyfikator'] = supplier_df['Identyfikator'].astype(str)
-    website_df['SKU'] = website_df['SKU'].astype(str)
-    new_skus = list(set(supplier_df['Identyfikator']) - set(website_df['SKU']))
-    new_skus_df = pd.DataFrame({
-        'New_SKUs': new_skus,
-        'New_SKUs_URLs': [generate_url(sku) for sku in new_skus]
-    })
-    with pd.ExcelWriter(output_file) as writer:
-        new_skus_df.to_excel(writer, sheet_name='New_SKUs', index=False)
+def compare_stocks(supplier_file, output_file):
+    try:
+        supplier_df = pd.read_excel(supplier_file)
+        supplier_df['Identyfikator'] = supplier_df['Identyfikator'].astype(str)
+        new_skus_df = pd.DataFrame({
+            'New_SKUs': supplier_df['Identyfikator'],
+            'New_SKUs_URLs': [generate_url(sku) for sku in supplier_df['Identyfikator']]
+        })
+        with pd.ExcelWriter(output_file) as writer:
+            new_skus_df.to_excel(writer, sheet_name='New_SKUs', index=False)
+        print(f"Stock comparison completed. Output saved to {output_file}", flush=True)
+    except Exception as e:
+        print(f"Exception in compare_stocks: {str(e)}", flush=True)
 
-# Generating 'edited_universal_stock.xlsx'
-supplier_df = pd.read_csv(supplier_csv, delimiter=';')
-supplier_df = supplier_df[supplier_df['Symbol'].str.startswith('L1', na=False)]
-supplier_df.rename(columns={'Symbol': 'SKU'}, inplace=True)
-supplier_xlsx = 'edited_universal_stock.xlsx'
-supplier_df.to_excel(supplier_xlsx, index=False)
-
-# Generating 'edited_catalog_products.xlsx'
-website_df = pd.read_csv(website_csv, delimiter=',')
-website_df.rename(columns={'sku': 'SKU'}, inplace=True)
-website_xlsx = 'edited_catalog_products.xlsx'
-website_df.to_excel(website_xlsx, index=False)
-
-# Use 'extract_with_info.xlsx' as the supplier file in compare_stocks function
-output_xlsx = 'SKU_Comparison.xlsx'
-compare_stocks('edited_universal_stock.xlsx', 'edited_catalog_products.xlsx', output_xlsx)
-
-
+def extract_between_first_slashes_from_end(description):
+    parts = description.split('/')
+    if len(parts) >= 2:
+        return parts[-2].strip()
+    return ''
 
 def generate_extract_with_info():
-    df = pd.read_excel('edited_universal_stock.xlsx')  # Read the edited file
-    filtered_df = df[df['Identyfikator'].apply(lambda x: str(x).startswith('L1'))].reset_index(drop=True)
-    final_rows = []
+    print("Starting generate_extract_with_info function.", flush=True)
+    try:
+        df = pd.read_excel('edited_universal_stock.xlsx')
+        print(f"Read {len(df)} rows from edited_universal_stock.xlsx", flush=True)
+        
+        filtered_df = df[df['Identyfikator'].apply(lambda x: str(x).startswith('L1'))].reset_index(drop=True)
+        print(f"Filtered to {len(filtered_df)} rows where Identyfikator starts with 'L1'", flush=True)
+        
+        final_rows = []
 
-    for index, row in filtered_df.iterrows():
-        sku = row['Identyfikator']
-        url = generate_url(sku)
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        if soup.find_all('div', {'class': 'product-inner'}):
-            final_rows.append(row)
+        for index, row in filtered_df.iterrows():
+            sku = row['Identyfikator']
+            url = generate_url(sku)
+            response = requests.get(url)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            if soup.find_all('div', {'class': 'product-inner'}):
+                final_rows.append(row)
+                print(f"Product found for SKU {sku} at {url}", flush=True)
 
-    final_df = pd.DataFrame(final_rows).reset_index(drop=True)
-    final_df['Correct_Extracted_Info'] = final_df['Opis'].apply(extract_between_first_slashes_from_end)
-    values_to_keep = ["A KL", "A- KL", "A1 KL", "A2 KL", "AM1 KL", "AM2 KL", "B KL", "B1 KL", "B2 KL", "KL A1", "KL A2", "KL AM1", "KL AM2", "KL B1", "KL B2", "V1 KL"]
-    final_filtered_df = final_df[final_df['Correct_Extracted_Info'].isin(values_to_keep)]
-    final_filtered_df.to_excel('extract_with_info.xlsx', index=False)
+        final_df = pd.DataFrame(final_rows).reset_index(drop=True)
+        print(f"{len(final_df)} rows retained after checking for product-inner", flush=True)
+        
+        if 'Opis' not in final_df.columns:
+            print("Column 'Opis' not found in final_df", flush=True)
+            final_df['Correct_Extracted_Info'] = ''
+        else:
+            final_df['Correct_Extracted_Info'] = final_df['Opis'].apply(extract_between_first_slashes_from_end)
+            print(f"Extracted Correct_Extracted_Info: {final_df['Correct_Extracted_Info'].unique()}", flush=True)
 
+        values_to_keep = ["A KL", "A- KL", "A1 KL", "A2 KL", "AM1 KL", "AM2 KL", "B KL", "B1 KL", "B2 KL", "KL A1", "KL A2", "KL AM1", "KL AM2", "KL B1", "KL B2", "V1 KL"]
+        print(f"Values to keep: {values_to_keep}", flush=True)
 
-
-# Generating 'edited_universal_stock.xlsx'
-supplier_df = pd.read_csv(supplier_csv, delimiter=';')
-supplier_df = supplier_df[supplier_df['Symbol'].str.startswith('L1', na=False)]
-supplier_df.rename(columns={'Symbol': 'SKU'}, inplace=True)
-supplier_xlsx = 'edited_universal_stock.xlsx'
-supplier_df.to_excel(supplier_xlsx, index=False)
-
-# Generating 'edited_catalog_products.xlsx'
-website_df = pd.read_csv(website_csv, delimiter=',')
-website_df.rename(columns={'sku': 'SKU'}, inplace=True)
-website_xlsx = 'edited_catalog_products.xlsx'
-website_df.to_excel(website_xlsx, index=False)
-
-# Call generate_extract_with_info here
-generate_extract_with_info()
-
-# Now, use 'extract_with_info.xlsx' as the supplier file in compare_stocks function
-output_xlsx = 'SKU_Comparison.xlsx' 
-compare_stocks('extract_with_info.xlsx', website_xlsx, output_xlsx)
-
-
+        final_filtered_df = final_df[final_df['Correct_Extracted_Info'].isin(values_to_keep)]
+        print(f"Correct_Extracted_Info values to be filtered: {final_df['Correct_Extracted_Info'].tolist()}", flush=True)
+        print(f"{len(final_filtered_df)} rows retained after filtering Correct_Extracted_Info", flush=True)
+        
+        final_filtered_df.to_excel('extract_with_info.xlsx', index=False)
+        print("Extract with info generated successfully.", flush=True)
+    except Exception as e:
+        print(f"Exception in generate_extract_with_info: {str(e)}", flush=True)
 
 def first_script():
-    urls = pd.read_excel("SKU_Comparison.xlsx", sheet_name="New_SKUs")
-    
-    results = pd.DataFrame(columns=["URL", "Link"])
-    
-    total_urls = len(urls['New_SKUs_URLs'])
-    
-    for idx, url in enumerate(urls['New_SKUs_URLs']):
-        print(f"Processing URL: {url}")
+    try:
+        urls = pd.read_excel("SKU_Comparison.xlsx", sheet_name="New_SKUs")
         
-        r = requests.get(url)
+        results = pd.DataFrame(columns=["URL", "Link"])
         
-        soup = BeautifulSoup(r.text, 'html.parser')
+        total_urls = len(urls['New_SKUs_URLs'])
         
-        links = soup.find_all('a', class_='back-image')
+        for idx, url in enumerate(urls['New_SKUs_URLs']):
+            print(f"Processing URL: {url}", flush=True)
+            
+            r = requests.get(url)
+            
+            soup = BeautifulSoup(r.text, 'html.parser')
+            
+            links = soup.find_all('a', class_='back-image')
 
-        for link in links:
-            href = link.get('href')
-            results.loc[len(results)] = [url, href]
-            print(f"Links found: {href}")
-     
-        progress_bar(idx+1, total_urls)
+            for link in links:
+                href = link.get('href')
+                results.loc[len(results)] = [url, href]
+                print(f"Links found: {href}", flush=True)
 
-    results.to_excel("scrapedurls_img.xlsx", index=False)
+        results.to_excel("scrapedurls_img.xlsx", index=False)
+        print("URL scraping completed.", flush=True)
+    except Exception as e:
+        print(f"Exception in first_script: {str(e)}", flush=True)
 
+def process_files():
+    print("Starting process_files function.", flush=True)
+    Tk().withdraw()
+
+    supplier_csv = askopenfilename(title="Select the universal_stock.csv file", filetypes=[("CSV files", "*.csv")])
+
+    if not supplier_csv:
+        print("You must select the file to proceed.", flush=True)
+        exit()
+
+    supplier_df = pd.read_csv(supplier_csv, delimiter=';')
+    print(f"Read {len(supplier_df)} rows from {supplier_csv}", flush=True)
+    
+    supplier_df = supplier_df[supplier_df['Symbol'].str.startswith('L1', na=False)]
+    print(f"Filtered to {len(supplier_df)} rows where Symbol starts with 'L1'", flush=True)
+    
+    supplier_df.rename(columns={'Symbol': 'SKU'}, inplace=True)
+    supplier_xlsx = 'edited_universal_stock.xlsx'
+    supplier_df.to_excel(supplier_xlsx, index=False)
+    print(f"Processed {supplier_csv} to {supplier_xlsx}", flush=True)
+
+    return supplier_xlsx
 
 def second_script():
-    df = pd.read_excel("scrapedurls_img.xlsx")
-    row_list = []
-    total_links = len(df['Link'])
+    print("Starting second_script function.", flush=True)
+    try:
+        df = pd.read_excel("scrapedurls_img.xlsx")
+        row_list = []
+        total_links = len(df['Link'])
 
-    for idx, link in enumerate(df['Link']):
-        print(f"Processing URL: {link}")
-        response = requests.get(link)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        ul_element = soup.find('ul', {'id': 'thumbs_list_frame'})
-        image_hrefs = []
-        if ul_element:
-            for li in ul_element.find_all('li'):
-                a = li.find('a')
-                if a and 'href' in a.attrs:
-                    image_hrefs.append(a['href'])
-        row_dict = {"Link": link}
-        for i, href in enumerate(image_hrefs):
-            col_name = f"Image_Href_{i+1}"
-            row_dict[col_name] = href
-        row_list.append(row_dict)
-        progress_bar(idx+1, total_links)
-    image_results = pd.DataFrame(row_list)
-    image_results.to_excel("scraped_image_hrefs.xlsx", index=False)
+        for idx, link in enumerate(df['Link']):
+            print(f"Processing URL: {link}", flush=True)
+            response = requests.get(link)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            ul_element = soup.find('ul', {'id': 'thumbs_list_frame'})
+            image_hrefs = []
+            if ul_element:
+                for li in ul_element.find_all('li'):
+                    a = li.find('a')
+                    if a and 'href' in a.attrs:
+                        image_hrefs.append(a['href'])
+            row_dict = {"Link": link}
+            for i, href in enumerate(image_hrefs):
+                col_name = f"Image_Href_{i+1}"
+                row_dict[col_name] = href
+            row_list.append(row_dict)
+        image_results = pd.DataFrame(row_list)
+        image_results.to_excel("scraped_image_hrefs.xlsx", index=False)
+        print("Image href scraping completed.", flush=True)
+    except Exception as e:
+        print(f"Exception in second_script: {str(e)}", flush=True)
 
 def third_script():
-    df = pd.read_excel("scrapedurls_img.xlsx")
-    chrome_options = Options()
-    chrome_profile_path = "C:\\Users\\AŽBE\\AppData\\Local\\Google\\Chrome\\User Data"
-    chrome_options.add_argument(f"user-data-dir={chrome_profile_path}")
-    chrome_options.add_argument("profile-directory=Profile 11")
-    driver = webdriver.Chrome(options=chrome_options)
-    attributes_to_extract = [
-        "Mark", "Model", "Razred izdelka", "Model procesorja", "velikost RAM-a", "Kapaciteta diska",
-        "Diagonala zaslona", "Zaslon na dotik", "Konektorji", "Garancija",
-        "Operacijski sistem", "Komunikacija", "Multimedija", "Model grafične kartice"
-    ]
-    extracted_data_df = pd.DataFrame()
-    total_links = len(df['Link'])
-
-    def slow_scroll(driver):
-        last_height = driver.execute_script("return window.pageYOffset;")
-        while True:
-            body = driver.find_element(By.TAG_NAME, 'body')
-            body.send_keys(Keys.PAGE_DOWN)
-            time.sleep(1)
-            new_height = driver.execute_script("return window.pageYOffset;")
-            if new_height == last_height:
-                break
-            last_height = new_height
-
-    for idx, link in enumerate(df['Link']):
-        print(f"Processing URL: {link}")
-        driver.get(link)
-        time.sleep(1)
-        slow_scroll(driver)
-        try:
-            table = driver.find_element(By.CLASS_NAME, 'table-data-sheet')
-            extracted_data = {'Link': link}
-            for row in table.find_elements(By.TAG_NAME, 'tr'):
-                cells = row.find_elements(By.TAG_NAME, 'td')
-                if len(cells) == 2:
-                    attribute = cells[0].text.strip()
-                    value = cells[1].text.strip()
-                    if attribute in attributes_to_extract:
-                        extracted_data[attribute] = value
-            new_row = pd.DataFrame([extracted_data])
-            extracted_data_df = pd.concat([extracted_data_df, new_row], ignore_index=True)
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            print("Table not found.")
-        progress_bar(idx+1, total_links)
-    driver.quit()
-    extracted_data_df.to_excel("extracted_attributes.xlsx", index=False)
-
-def main():
+    print("Starting third_script function.", flush=True)
     try:
-        generate_extract_with_info()
-        print("Running the second script...")
-        print("Running the SKU comparison script...")
-        create_SKU_comparison()
-        print("SKU comparison script completed.")
-        
-        print("Running the first script...")
-        first_script()
-        print("First script completed.")
+        df = pd.read_excel("scrapedurls_img.xlsx")
+        chrome_options = Options()
+        chrome_profile_path = "C:\\Users\\roksc\\AppData\\Local\\Google\\Chrome\\User Data"
+        chrome_options.add_argument(f"user-data-dir={chrome_profile_path}")
+        chrome_options.add_argument("profile-directory=Profile 1")
+        driver = webdriver.Chrome(options=chrome_options)
+        attributes_to_extract = [
+            "Mark", "Model", "Razred izdelka", "Model procesorja", "velikost RAM-a", "Kapaciteta diska",
+            "Diagonala zaslona", "Zaslon na dotik", "Konektorji", "Garancija",
+            "Operacijski sistem", "Komunikacija", "Multimedija", "Model grafične kartice"
+        ]
+        extracted_data_df = pd.DataFrame()
+        total_links = len(df['Link'])
 
-        print("Running the second script...")
-        second_script()
-        print("Second script completed.")
+        def slow_scroll(driver):
+            last_height = driver.execute_script("return window.pageYOffset;")
+            while True:
+                body = driver.find_element(By.TAG_NAME, 'body')
+                body.send_keys(Keys.PAGE_DOWN)
+                time.sleep(1)
+                new_height = driver.execute_script("return window.pageYOffset;")
+                if new_height == last_height:
+                    break
+                last_height = new_height
 
-        print("Running the third script...")
-        third_script()
-        print("Third script completed.")
+        for idx, link in enumerate(df['Link']):
+            print(f"Processing URL: {link}", flush=True)
+            driver.get(link)
+            time.sleep(1)
+            slow_scroll(driver)
+            
+            # Handle fancybox overlay
+            try:
+                if driver.find_element(By.CLASS_NAME, 'fancybox-overlay'):
+                    print("Found fancybox overlay, attempting to close it...", flush=True)
+                    close_button = driver.find_element(By.CLASS_NAME, 'fancybox-close')
+                    close_button.click()
+                    time.sleep(1)
+            except:
+                print("No fancybox overlay found, continuing...", flush=True)
+
+            try:
+                table = driver.find_element(By.CLASS_NAME, 'table-data-sheet')
+                extracted_data = {'Link': link}
+                for row in table.find_elements(By.TAG_NAME, 'tr'):
+                    cells = row.find_elements(By.TAG_NAME, 'td')
+                    if len(cells) == 2:
+                        attribute = cells[0].text.strip()
+                        value = cells[1].text.strip()
+                        if attribute in attributes_to_extract:
+                            extracted_data[attribute] = value
+                new_row = pd.DataFrame([extracted_data])
+                extracted_data_df = pd.concat([extracted_data_df, new_row], ignore_index=True)
+            except Exception as e:
+                print(f"An error occurred: {e}", flush=True)
+                print("Table not found.", flush=True)
+        driver.quit()
+        extracted_data_df.to_excel("extracted_attributes.xlsx", index=False)
+        print("Attributes extraction completed.", flush=True)
     except Exception as e:
-        log_exception(e)
+        print(f"Exception in third_script: {str(e)}", flush=True)
 
 if __name__ == "__main__":
-    log_file = open("logs.txt", "w")
-    sys.stdout = log_file
-    sys.stderr = log_file
+    print("Main execution started.", flush=True)
+    try:
+        supplier_xlsx = process_files()
+        
+        generate_extract_with_info()
+        compare_stocks('extract_with_info.xlsx', 'SKU_Comparison.xlsx')
+        first_script()
+        second_script()
+        third_script()
+    
+    except Exception as e:
+        print(f"Exception in main: {str(e)}", flush=True)
+        print("Main execution completed.", flush=True)
 
-    main()
+#Od kle naprej je editanje dokumentov######################################################################################################################################################################################################################################
 
-    log_file.close()
-
-
-
-import pandas as pd
+import pandas as pd36
 
 def update_graphic_card_model(cell):
     if pd.isna(cell) or cell == "":
@@ -429,13 +412,22 @@ data.to_excel("descriptions.xlsx", index=False)
 
 import pandas as pd
 
-
-
 # Create the new export DataFrame with required column headers
-new_export_df = pd.DataFrame(columns=['link','handleId', 'fieldType', 'name', 'description', 'productImageUrl', 'collection', 'SKU', 'ribbon', 'price', 'surcharge', 'visible', 'discountMode','discountValue','inventory','weight','cost'])
+new_export_df = pd.DataFrame(columns=['link','handleId', 'fieldType', 'name', 'description', 'productImageUrl', 'collection', 'SKU', 'ribbon', 'price', 'surcharge', 'visible', 'discountMode', 'discountValue', 'inventory', 'weight', 'cost'])
 
 # Read the updated descriptions Excel file with the 'Nivo' column
 descriptions = pd.read_excel('descriptions.xlsx')
+
+# Check for required columns in the descriptions DataFrame
+required_columns = [
+    'Link', 'SKU', 'Mark', 'Model', 'Model procesorja', 'velikost RAM-a', 'Kapaciteta diska', 
+    'Diagonala zaslona', 'Razred izdelka', 'Description', 'Image_Href_2', 'Image_Href_3', 
+    'Image_Href_4', 'Image_Href_5', 'Leto', 'Operacijski sistem'
+]
+
+for col in required_columns:
+    if col not in descriptions.columns:
+        raise ValueError(f"Missing required column: {col}")
 
 new_export_df['link'] = descriptions['Link']
 
@@ -443,31 +435,39 @@ new_export_df['handleId'] = descriptions['SKU'].reset_index(drop=True)
 
 new_export_df['fieldType'] = 'Product'
 
-new_export_df['name'] = descriptions['Mark'] + ' ' + descriptions['Model'] + '/' + descriptions['Model procesorja'].str[:13] + '/' + descriptions['velikost RAM-a'] + '/' + descriptions['Kapaciteta diska'] + '/' + descriptions['Diagonala zaslona'] + '/' + descriptions['Razred izdelka']
+new_export_df['name'] = (
+    descriptions['Mark'] + ' ' + descriptions['Model'] + '/' + descriptions['Model procesorja'].str[:13] + '/' +
+    descriptions['velikost RAM-a'] + '/' + descriptions['Kapaciteta diska'] + '/' + descriptions['Diagonala zaslona'] + '/' +
+    descriptions['Razred izdelka']
+)
 
-# Add the description data
 new_export_df['description'] = descriptions['Description'].reset_index(drop=True)
 
-new_export_df['productImageUrl'] = descriptions['Image_Href_2'] + ';' + descriptions['Image_Href_3'] + ';' + descriptions['Image_Href_4'] + ';' + descriptions['Image_Href_5']
+new_export_df['productImageUrl'] = (
+    descriptions['Image_Href_2'].fillna('') + ';' + 
+    descriptions['Image_Href_3'].fillna('') + ';' + 
+    descriptions['Image_Href_4'].fillna('') + ';' + 
+    descriptions['Image_Href_5'].fillna('')
+)
 
-new_export_df['collection'] ="SHOPLET;" + "Prenosni računalniki;" + descriptions['Model procesorja'].str[:13] + ';' + descriptions['Leto'].astype(str) + ';' + descriptions['Operacijski sistem'] + ';' + descriptions['Razred izdelka'] + ';' + descriptions['Diagonala zaslona'] + ';' + descriptions['Mark'] + ';' + descriptions['velikost RAM-a'] + ';' + descriptions['Kapaciteta diska'] + ';' + descriptions['Mark'].upper() + " LAPTOP"
+new_export_df['collection'] = (
+    "SHOPLET;" + "Prenosni računalniki;" + descriptions['Model procesorja'].str[:13] + ';' +
+    descriptions['Leto'].astype(str).fillna('') + ';' + descriptions['Operacijski sistem'].fillna('') + ';' +
+    descriptions['Razred izdelka'].fillna('') + ';' + descriptions['Diagonala zaslona'].fillna('') + ';' + 
+    descriptions['Mark'].fillna('') + ';' + descriptions['velikost RAM-a'].fillna('') + ';' +
+    descriptions['Kapaciteta diska'].fillna('') + ';' + descriptions['Mark'].str.upper().fillna('') + " LAPTOP"
+)
 
-# Populate SKU column from the updated descriptions DataFrame
 new_export_df['SKU'] = descriptions['SKU'].reset_index(drop=True)
 
 new_export_df['ribbon'] = ''
-
 new_export_df['price'] = ''
-
 new_export_df['surcharge'] = ''
-# Add the static columns
 new_export_df['visible'] = 'TRUE'
 new_export_df['discountMode'] = 'Percent'
 new_export_df['discountValue'] = 0
 new_export_df['inventory'] = 'InStock'
-
 new_export_df['weight'] = ''
-
 new_export_df['cost'] = ''
 
 #Save the new export DataFrame to an Excel file
@@ -518,7 +518,7 @@ for index, row in data.iterrows():
     print(f"Processing row {index+1} with URL {row['link']}")
     scraped_price = scrape_price(row['link'])
     if scraped_price is not None:
-        cost = scraped_price * 0.22 - 20
+        cost = scraped_price * 0.22
         data.at[index, 'cost'] = f"{cost:.2f}"
         print(f"Calculated cost: {cost:.2f}")
 
