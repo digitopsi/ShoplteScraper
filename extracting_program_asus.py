@@ -297,7 +297,7 @@ df_merged['Model grafične kartice'] = df_merged['Model grafične kartice'].appl
 
 # Step 1: Remove Rows Based on Conditions
 df_merged = df_merged[df_merged['Operacijski sistem'].str.contains('Windows|Chrome', na=False)]
-df_merged = df_merged[df_merged['Razred izdelka'].str.contains('IN|-IN|B|Novo', na=False)]
+df_merged = df_merged[df_merged['Razred izdelka'].str.contains('IN|IN-|B|Novo', na=False)]
 df_merged['Mark'] = df_merged['Mark'].apply(filter_mark)
 df_merged = df_merged[df_merged['Mark'].notna()]
 df_merged.dropna(inplace=True)
