@@ -237,7 +237,7 @@ if __name__ == "__main__":
 
 #Od kle naprej je editanje dokumentov######################################################################################################################################################################################################################################
 
-import pandas as pd36
+import pandas as pd
 
 def update_graphic_card_model(cell):
     if pd.isna(cell) or cell == "":
@@ -253,59 +253,91 @@ def filter_mark(cell):
             return brand
     return None
 
+def generate_unique_skus(df):
+    unique_skus = []
+    current_sku = None
+    counter = 1
+
+    for index, row in df.iterrows():
+        sku = row['SKU']
+        if sku != current_sku:
+            current_sku = sku
+            counter = 1
+            unique_skus.append(sku)
+        else:
+            unique_skus.append(f"{sku}+{counter}")
+            counter += 1
+    return unique_skus
+
 # Load the original Excel file into a DataFrame
 original_file_path = 'extracted_attributes.xlsx'
 df_original = pd.read_excel(original_file_path)
 
+# Print column names to identify the correct column name
+print("Columns in df_original:", df_original.columns)
+
+# Assuming the correct column name for the link is identified
+correct_link_column_name = 'Link'  # Update this to the correct column name if needed
+
+# Extract SKU from Link
+df_original['SKU'] = df_original[correct_link_column_name].apply(lambda x: x[-17:-10])
+
+# Ensure SKUs are unique by processing each SKU group
+df_original['SKU'] = generate_unique_skus(df_original)
+
+# Ensure the SKU-Handle DataFrame is unique by 'Link'
+df_sku_handle = df_original[[correct_link_column_name, 'SKU']].drop_duplicates(subset=[correct_link_column_name])
+
+# Merge the SKU and Handle IDs back into the original data
+df_merged = pd.merge(df_original, df_sku_handle, on=correct_link_column_name, how='left', suffixes=('', '_drop'))
+df_merged.drop([col for col in df_merged.columns if 'drop' in col], axis=1, inplace=True)
+
 # Modify 'Model grafične kartice' column
-df_original['Model grafične kartice'] = df_original['Model grafične kartice'].apply(update_graphic_card_model)
+df_merged['Model grafične kartice'] = df_merged['Model grafične kartice'].apply(update_graphic_card_model)
 
 # Step 1: Remove Rows Based on Conditions
-df_original = df_original[df_original['Operacijski sistem'].str.contains('Windows|Chrome', na=False)]
-df_original = df_original[df_original['Razred izdelka'].str.contains('IN|-IN|B|Novo', na=False)]
-df_original['Mark'] = df_original['Mark'].apply(filter_mark)
-df_original = df_original[df_original['Mark'].notna()]
-df_original.dropna(inplace=True)
+df_merged = df_merged[df_merged['Operacijski sistem'].str.contains('Windows|Chrome', na=False)]
+df_merged = df_merged[df_merged['Razred izdelka'].str.contains('IN|-IN|B|Novo', na=False)]
+df_merged['Mark'] = df_merged['Mark'].apply(filter_mark)
+df_merged = df_merged[df_merged['Mark'].notna()]
+df_merged.dropna(inplace=True)
 
 # Step 2: Modify Data Inside Cells
-df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].astype(str)
-df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].str.replace('.', ',')
-df_original['Diagonala zaslona'] = df_original['Diagonala zaslona'].apply(lambda x: f'{x}\"')
-df_original['Zaslon na dotik'] = df_original['Zaslon na dotik'].replace({'ja': 'Da', 'št': 'Ne'})
+df_merged['Diagonala zaslona'] = df_merged['Diagonala zaslona'].astype(str).str.replace('.', ',').apply(lambda x: f'{x}\"')
+df_merged['Zaslon na dotik'] = df_merged['Zaslon na dotik'].replace({'ja': 'Da', 'št': 'Ne'})
 
-# Extract SKU from Link and handle duplicates
-df_original['SKU'] = df_original['Link'].apply(lambda x: x[-17:-10])
-df_original['SKU_Counter'] = df_original.groupby('SKU').cumcount() + 1
-df_original['SKU'] = df_original.apply(lambda x: f"{x['SKU']}+{x['SKU_Counter']}" if x['SKU_Counter'] > 1 else x['SKU'], axis=1)
-df_original.drop(columns='SKU_Counter', inplace=True)
+df_merged['Razred izdelka'] = df_merged['Razred izdelka'].str.replace('IN', 'A', case=False).str.replace('IN-', 'B', case=False).str.replace('B', 'C', case=False).str.replace('Novo', 'A+', case=False)
 
-df_original['Razred izdelka'] = df_original['Razred izdelka'].str.replace('IN', 'A', case=False)
-df_original['Razred izdelka'] = df_original['Razred izdelka'].str.replace('IN-', 'B', case=False)
-df_original['Razred izdelka'] = df_original['Razred izdelka'].str.replace('B', 'C', case=False)
-df_original['Razred izdelka'] = df_original['Razred izdelka'].str.replace('Novo', 'A+', case=False)
+df_merged['Model'] = df_merged['Model'].str.replace('Natančnost', 'Precision', case=False).str.replace('Zemljepisna širina', 'Latitude', case=False)
 
-# Additional modifications to the 'Model' column
-df_original['Model'] = df_original['Model'].str.replace('Natančnost', 'Precision', case=False)
-df_original['Model'] = df_original['Model'].str.replace('Zemljepisna širina', 'Latitude', case=False)
-
-# Load and filter df_image_hrefs
+# Load the image hrefs data
 image_hrefs_file_path = 'scraped_image_hrefs.xlsx'
 df_image_hrefs = pd.read_excel(image_hrefs_file_path)
-common_links = set(df_original['Link']).intersection(set(df_image_hrefs['Link']))
-df_original_common = df_original[df_original['Link'].isin(common_links)].copy()
+
+# Filter and sort DataFrames based on common 'Link'
+common_links = set(df_merged[correct_link_column_name]).intersection(set(df_image_hrefs['Link']))
+df_merged_common = df_merged[df_merged[correct_link_column_name].isin(common_links)].copy()
 df_image_hrefs_common = df_image_hrefs[df_image_hrefs['Link'].isin(common_links)].copy()
+
+df_merged_common.sort_values(correct_link_column_name, inplace=True)
+df_image_hrefs_common.sort_values('Link', inplace=True)
 
 # Specify columns to merge from df_image_hrefs
 cols_to_merge = ['Image_Href_2', 'Image_Href_3', 'Image_Href_4', 'Image_Href_5', 'Image_Href_6']
 
-# Sort and merge DataFrames
-df_original_common.sort_values('Link', inplace=True)
-df_image_hrefs_common.sort_values('Link', inplace=True)
-df_merged = pd.merge(df_original_common, df_image_hrefs_common[['Link'] + cols_to_merge], on='Link', how='left')
+# Merge DataFrames
+df_final_merged = pd.merge(df_merged_common, df_image_hrefs_common[['Link'] + cols_to_merge], left_on=correct_link_column_name, right_on='Link', how='left')
+
+# Remove duplicates
+df_final_merged.drop_duplicates(subset=[correct_link_column_name], inplace=True)
 
 # Save the final merged DataFrame
 final_output_file_path = 'final_merged_attributes.xlsx'
-df_merged.to_excel(final_output_file_path, index=False)
+df_final_merged.to_excel(final_output_file_path, index=False)
+
+# Display the first few rows to verify
+print(df_final_merged.head())
+
 
 import pandas as pd
 
