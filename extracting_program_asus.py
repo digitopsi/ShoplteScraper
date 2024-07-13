@@ -468,7 +468,7 @@ new_export_df['handleId'] = descriptions['SKU'].reset_index(drop=True)
 new_export_df['fieldType'] = 'Product'
 
 new_export_df['name'] = (
-    descriptions['Mark'] + ' ' + descriptions['Model'] + '/' + descriptions['Model procesorja'].str[:13] + '/' +
+    'Laptop' + ' ' + descriptions['Mark'] + ' ' + descriptions['Model'] + '/' + descriptions['Model procesorja'].str[:13] + '/' +
     descriptions['velikost RAM-a'] + '/' + descriptions['Kapaciteta diska'] + '/' + descriptions['Diagonala zaslona'] + '/' +
     descriptions['Razred izdelka']
 )
