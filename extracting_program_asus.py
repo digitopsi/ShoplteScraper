@@ -57,14 +57,14 @@ def generate_extract_with_info():
         final_df = pd.DataFrame(final_rows).reset_index(drop=True)
         print(f"{len(final_df)} rows retained after checking for product-inner", flush=True)
         
-        if 'Opis' not in final_df.columns:
-            print("Column 'Opis' not found in final_df", flush=True)
+        if 'Class' not in final_df.columns:
+            print("Column 'Class' not found in final_df", flush=True)
             final_df['Correct_Extracted_Info'] = ''
         else:
-            final_df['Correct_Extracted_Info'] = final_df['Opis'].apply(extract_between_first_slashes_from_end)
+            final_df['Correct_Extracted_Info'] = final_df['Class'].apply(lambda x: x if x in ['A', 'B', 'A-'] else '')
             print(f"Extracted Correct_Extracted_Info: {final_df['Correct_Extracted_Info'].unique()}", flush=True)
 
-        values_to_keep = ["A KL", "A- KL", "A1 KL", "A2 KL", "AM1 KL", "AM2 KL", "B KL", "B1 KL", "B2 KL", "KL A1", "KL A2", "KL AM1", "KL AM2", "KL B1", "KL B2", "V1 KL"]
+        values_to_keep = ["A", "A-", "B"]
         print(f"Values to keep: {values_to_keep}", flush=True)
 
         final_filtered_df = final_df[final_df['Correct_Extracted_Info'].isin(values_to_keep)]
